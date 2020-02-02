@@ -1,13 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/GoogleCloudPlatform/cloudsql-proxy/proxy/dialers/mysql"
 )
 
 type userRequest struct {
@@ -21,6 +20,29 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	rows, err := db.Query("SHOW DATABASES")
+	if err != nil {
+		log.Printf("Could not query db: %v", err)
+		http.Error(w, "Internal Error", 500)
+		return
+	}
+	defer rows.Close()
+
+	newRows, err := db.Query("SELECT * FROM qrEntryDatabase.GATE")
+
+	buf := bytes.NewBufferString("Databases:\n")
+	fmt.Fprintf(buf, "%s\n", newRows)
+	for rows.Next() {
+		var dbName string
+		if err := rows.Scan(&dbName); err != nil {
+			log.Printf("Could not scan result: %v", err)
+			http.Error(w, "Internal Error", 500)
+			return
+		}
+		fmt.Fprintf(buf, "- %s\n", dbName)
+	}
+
+	w.Write(buf.Bytes())
 	fmt.Fprint(w, "Hello, World in Harvard!")
 }
 
@@ -39,6 +61,23 @@ func PostHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func DB() *sql.DB {
+	var (
+		connectionName = "qrentry-makeharvard-2020:us-east4:qrentry"
+		user           = "root"
+		dbName         = "qrEntryDatabase" //os.Getenv("CLOUDSQL_DATABASE_NAME") // NOTE: dbName may be empty
+		password       = "makeharvard2020" // NOTE: password may be empty
+		socket         = "/cloudsql"
+	)
+	// connection string format: USER:PASSWORD@unix(/cloudsql/PROJECT_ID:REGION_ID:INSTANCE_ID)/[DB_NAME]
+	dbURI := fmt.Sprintf("%s:%s@unix(%s/%s)/%s", user, password, socket, connectionName, dbName)
+	conn, err := sql.Open("mysql", dbURI)
+	if err != nil {
+		panic(fmt.Sprintf("DB: %v", err))
+	}
+	return conn
+}
+
 var db *sql.DB
 var num int
 
@@ -46,27 +85,10 @@ func main() {
 	http.HandleFunc("/", indexHandler)
 	http.HandleFunc("/gate", PostHandler)
 
+	db = DB()
+
 	// search db if authenticated.
 	// if authenticated, send request to gate.
-
-	cfg := mysql.Cfg("qrentry-makeharvard-2020:us-east4:qrentry", "root", "makeharvard2020")
-	cfg.DBName = "qrEntryDatabase"
-	db, err := mysql.DialCfg(cfg)
-	if err != nil {
-		//
-		fmt.Println(err)
-	}
-
-	rows, err := db.Query(`SELECT * FROM GATE`)
-	if err != nil {
-		//
-		fmt.Println(err)
-	}
-	rows.Scan(&num)
-	fmt.Println(num)
-	fmt.Println(db)
-	fmt.Println(db.Ping())
-	fmt.Println(db.Query(`SELECT * FROM AUTHENTICATED_USERS`))
 
 	port := os.Getenv("PORT")
 	if port == "" {
